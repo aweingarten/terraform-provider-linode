@@ -266,27 +266,34 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta any) diag.
 	}
 
 	ctx = tflog.SetField(ctx, "cluster_id", cluster.ID)
-	tflog.Debug(ctx, "Waiting for a single LKE cluster node to be ready")
 
-	// Sometimes the K8S API will raise an EOF error if polling immediately after
-	// a cluster is created. We should retry accordingly.
-	// NOTE: This routine has a short retry period because we want to raise
-	// and meaningful errors quickly.
-	diag.FromErr(retry.RetryContext(ctx, retryContextTimeout, func() *retry.RetryError {
-		tflog.Debug(ctx, "client.WaitForLKEClusterCondition(...)", map[string]any{
-			"condition": "ClusterHasReadyNode",
-		})
+	// Only wait for ready nodes when pools were requested.
+	// Enterprise tier clusters can be created with zero pools.
+	if len(createOpts.NodePools) > 0 {
+		tflog.Debug(ctx, "Waiting for a single LKE cluster node to be ready")
 
-		err := client.WaitForLKEClusterConditions(ctx, cluster.ID, linodego.LKEClusterPollOptions{
-			TimeoutSeconds: 15 * 60,
-		}, k8scondition.ClusterHasReadyNode)
-		if err != nil {
-			tflog.Debug(ctx, err.Error())
-			return retry.RetryableError(err)
-		}
+		// Sometimes the K8S API will raise an EOF error if polling immediately after
+		// a cluster is created. We should retry accordingly.
+		// NOTE: This routine has a short retry period because we want to raise
+		// and meaningful errors quickly.
+		diag.FromErr(retry.RetryContext(ctx, retryContextTimeout, func() *retry.RetryError {
+			tflog.Debug(ctx, "client.WaitForLKEClusterCondition(...)", map[string]any{
+				"condition": "ClusterHasReadyNode",
+			})
 
-		return nil
-	}))
+			err := client.WaitForLKEClusterConditions(ctx, cluster.ID, linodego.LKEClusterPollOptions{
+				TimeoutSeconds: 15 * 60,
+			}, k8scondition.ClusterHasReadyNode)
+			if err != nil {
+				tflog.Debug(ctx, err.Error())
+				return retry.RetryableError(err)
+			}
+
+			return nil
+		}))
+	} else {
+		tflog.Debug(ctx, "No pools defined, skipping wait for ready node")
+	}
 
 	return readResource(ctx, d, meta)
 }
@@ -546,7 +553,12 @@ func populateLogAttributes(ctx context.Context, d *schema.ResourceData) context.
 func customDiffValidateOptionalCount(ctx context.Context, diff *schema.ResourceDiff, meta any) error {
 	invalidPools := make([]string, 0)
 
-	poolIterator := diff.GetRawConfig().GetAttr("pool").ElementIterator()
+	pool := diff.GetRawConfig().GetAttr("pool")
+	if pool.IsNull() || !pool.IsKnown() || pool.LengthInt() == 0 {
+		return nil
+	}
+
+	poolIterator := pool.ElementIterator()
 
 	for poolIterator.Next() {
 		rawKey, rawPool := poolIterator.Element()
