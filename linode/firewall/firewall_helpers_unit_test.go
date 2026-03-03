@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-framework-nettypes/cidrtypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -63,13 +62,13 @@ func TestExpandFirewallRules(t *testing.T) {
 					Protocol: types.StringValue("SSH"),
 					Ports:    types.StringValue("22"),
 					IPv4: types.ListValueMust(
-						cidrtypes.IPv4PrefixType{},
+						types.StringType,
 						[]attr.Value{
-							cidrtypes.NewIPv4PrefixValue("192.168.1.1/24"),
+							types.StringValue("192.168.1.1/24"),
 						},
 					),
 					IPv6: types.ListValueMust(
-						cidrtypes.IPv6PrefixType{},
+						types.StringType,
 						[]attr.Value{},
 					),
 				},

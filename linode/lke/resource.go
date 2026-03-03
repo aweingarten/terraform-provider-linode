@@ -139,6 +139,13 @@ func readResource(ctx context.Context, d *schema.ResourceData, meta any) diag.Di
 	d.Set("vpc_id", cluster.VpcID)
 	d.Set("stack_type", cluster.StackType)
 
+	if cluster.RuleSetIDs != nil {
+		d.Set("ruleset_ids", []map[string]any{{
+			"inbound":  cluster.RuleSetIDs.Inbound,
+			"outbound": cluster.RuleSetIDs.Outbound,
+		}})
+	}
+
 	matchedPools, err := matchPoolsWithSchema(ctx, pools, declaredPools)
 	if err != nil {
 		return diag.Errorf("failed to match api pools with schema: %s", err)
@@ -265,6 +272,15 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta any) diag.
 		return diag.Errorf("failed to create LKE cluster: %s", err)
 	}
 	d.SetId(strconv.Itoa(cluster.ID))
+
+	// Persist ruleset IDs from the create response so they're available
+	// immediately without a separate read (Enterprise clusters only).
+	if cluster.RuleSetIDs != nil {
+		d.Set("ruleset_ids", []map[string]any{{
+			"inbound":  cluster.RuleSetIDs.Inbound,
+			"outbound": cluster.RuleSetIDs.Outbound,
+		}})
+	}
 
 	// Currently the enterprise cluster kube config takes long time to generate.
 	// Wait for it to be ready before start waiting for nodes and allow a longer timeout for retrying
