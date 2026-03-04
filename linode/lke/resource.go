@@ -139,11 +139,20 @@ func readResource(ctx context.Context, d *schema.ResourceData, meta any) diag.Di
 	d.Set("vpc_id", cluster.VpcID)
 	d.Set("stack_type", cluster.StackType)
 
-	if cluster.RuleSetIDs != nil {
-		d.Set("ruleset_ids", []map[string]any{{
-			"inbound":  cluster.RuleSetIDs.Inbound,
-			"outbound": cluster.RuleSetIDs.Outbound,
-		}})
+	// Neither POST nor GET /lke/clusters/{id} returns ruleset_ids.
+	// For enterprise clusters, discover them via GET /networking/firewalls/rulesets
+	// matching the lke{id}-inbound / lke{id}-outbound label convention.
+	if cluster.Tier == TierEnterprise {
+		rulesetIDs, rsDiags := discoverClusterRulesets(ctx, client, id)
+		if rsDiags.HasError() {
+			return rsDiags
+		}
+		if rulesetIDs != nil {
+			d.Set("ruleset_ids", []map[string]any{{
+				"inbound":  rulesetIDs.Inbound,
+				"outbound": rulesetIDs.Outbound,
+			}})
+		}
 	}
 
 	matchedPools, err := matchPoolsWithSchema(ctx, pools, declaredPools)
@@ -273,14 +282,7 @@ func createResource(ctx context.Context, d *schema.ResourceData, meta any) diag.
 	}
 	d.SetId(strconv.Itoa(cluster.ID))
 
-	// Persist ruleset IDs from the create response so they're available
-	// immediately without a separate read (Enterprise clusters only).
-	if cluster.RuleSetIDs != nil {
-		d.Set("ruleset_ids", []map[string]any{{
-			"inbound":  cluster.RuleSetIDs.Inbound,
-			"outbound": cluster.RuleSetIDs.Outbound,
-		}})
-	}
+	// ruleset_ids are discovered by readResource via ListFirewallRuleSets.
 
 	// Currently the enterprise cluster kube config takes long time to generate.
 	// Wait for it to be ready before start waiting for nodes and allow a longer timeout for retrying
@@ -643,4 +645,56 @@ func customDiffValidatePoolForStandardTier(ctx context.Context, diff *schema.Res
 	}
 
 	return nil
+}
+
+// discoverClusterRulesets looks up the LKE-E service-managed rulesets via
+// GET /networking/firewalls/rulesets, matching the label convention
+// lke{clusterID}-inbound / lke{clusterID}-outbound.
+// Neither POST nor GET /lke/clusters/{id} returns these IDs, so this is
+// the only way to populate ruleset_ids during read and import.
+func discoverClusterRulesets(
+	ctx context.Context, client linodego.Client, clusterID int,
+) (*linodego.LKEClusterRuleSetIDs, diag.Diagnostics) {
+	inboundLabel := fmt.Sprintf("lke%d-inbound", clusterID)
+	outboundLabel := fmt.Sprintf("lke%d-outbound", clusterID)
+
+	tflog.Debug(ctx, "Discovering LKE-E rulesets", map[string]any{
+		"inbound_label":  inboundLabel,
+		"outbound_label": outboundLabel,
+	})
+
+	rulesets, err := client.ListFirewallRuleSets(ctx, &linodego.ListOptions{})
+	if err != nil {
+		return nil, diag.Errorf(
+			"failed to list firewall rulesets for cluster %d: %s", clusterID, err,
+		)
+	}
+
+	var inboundID, outboundID int
+	for _, rs := range rulesets {
+		switch rs.Label {
+		case inboundLabel:
+			inboundID = rs.ID
+		case outboundLabel:
+			outboundID = rs.ID
+		}
+	}
+
+	if inboundID == 0 || outboundID == 0 {
+		tflog.Warn(ctx, "LKE-E rulesets not found", map[string]any{
+			"inbound_id":  inboundID,
+			"outbound_id": outboundID,
+		})
+		return nil, nil
+	}
+
+	tflog.Info(ctx, "Found LKE-E rulesets", map[string]any{
+		"inbound_id":  inboundID,
+		"outbound_id": outboundID,
+	})
+
+	return &linodego.LKEClusterRuleSetIDs{
+		Inbound:  inboundID,
+		Outbound: outboundID,
+	}, nil
 }
